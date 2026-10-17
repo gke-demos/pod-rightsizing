@@ -1,0 +1,267 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: throttled-app
+  namespace: pod-rightsizing
+  labels:
+    demo: startup-boost
+    app: throttled-app
+    role: throttled
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: throttled-app
+  template:
+    metadata:
+      labels:
+        demo: startup-boost
+        app: throttled-app
+        role: throttled
+    spec:
+      terminationGracePeriodSeconds: 2
+      containers:
+        - name: app
+          image: alpine:3.20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - test -f /tmp/ready
+            initialDelaySeconds: 1
+            periodSeconds: 1
+            failureThreshold: 60
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: APP_ROLE
+              value: "throttled"
+            - name: STARTUP_ITERATIONS
+              value: "12000000"
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -eu
+
+              now_ms() {
+                awk '{printf "%d\n", $1 * 1000}' /proc/uptime
+              }
+
+              read_cpu_max_mc() {
+                if [ -r /sys/fs/cgroup/cpu.max ]; then
+                  awk '{
+                    if ($1 == "max") { print "unlimited"; }
+                    else { printf "%dm\n", ($1 * 1000) / $2; }
+                  }' /sys/fs/cgroup/cpu.max
+                else
+                  echo "unknown"
+                fi
+              }
+
+              read_stat_field() {
+                field="$1"
+                if [ -r /sys/fs/cgroup/cpu.stat ]; then
+                  awk -v f="$field" '$1 == f {print $2; found=1} END {if (!found) print 0}' /sys/fs/cgroup/cpu.stat
+                else
+                  echo 0
+                fi
+              }
+
+              BOOT_CPU_MAX_MC="$(read_cpu_max_mc)"
+              START_MS="$(now_ms)"
+              START_THROTTLED="$(read_stat_field nr_throttled)"
+              START_THROTTLED_USEC="$(read_stat_field throttled_usec)"
+              START_PERIODS="$(read_stat_field nr_periods)"
+
+              printf "[%s] pod=%s role=%s phase=STARTUP_BEGIN boot_cgroup_cpu=%s iterations=%s\n" \
+                "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${APP_ROLE}" "${BOOT_CPU_MAX_MC}" "${STARTUP_ITERATIONS}"
+
+              awk -v n="${STARTUP_ITERATIONS}" 'BEGIN { for (i = 0; i < n; i++) x += i * 0.000001; print x }' >/dev/null
+
+              END_MS="$(now_ms)"
+              END_THROTTLED="$(read_stat_field nr_throttled)"
+              END_THROTTLED_USEC="$(read_stat_field throttled_usec)"
+              END_PERIODS="$(read_stat_field nr_periods)"
+
+              STARTUP_MS=$((END_MS - START_MS))
+              STARTUP_NR_THROTTLED=$((END_THROTTLED - START_THROTTLED))
+              STARTUP_THROTTLED_MS=$(((END_THROTTLED_USEC - START_THROTTLED_USEC) / 1000))
+              STARTUP_NR_PERIODS=$((END_PERIODS - START_PERIODS))
+
+              touch /tmp/ready
+
+              printf "[%s] pod=%s role=%s phase=READY startup_ms=%d nr_throttled=%d throttled_ms=%d boot_cgroup_cpu=%s\n" \
+                "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${APP_ROLE}" "${STARTUP_MS}" \
+                "${STARTUP_NR_THROTTLED}" "${STARTUP_THROTTLED_MS}" "${BOOT_CPU_MAX_MC}"
+
+              while true; do
+                LIVE_CPU_MAX_MC="$(read_cpu_max_mc)"
+                LIVE_NR_THROTTLED="$(read_stat_field nr_throttled)"
+                LIVE_THROTTLED_MS="$(($(read_stat_field throttled_usec) / 1000))"
+
+                cat <<EOF >/tmp/rightsizing-report.tmp
+              POD_NAME=${POD_NAME}
+              APP_ROLE=${APP_ROLE}
+              BOOT_CPU_MAX_MC=${BOOT_CPU_MAX_MC}
+              LIVE_CPU_MAX_MC=${LIVE_CPU_MAX_MC}
+              STARTUP_MS=${STARTUP_MS}
+              STARTUP_NR_PERIODS=${STARTUP_NR_PERIODS}
+              STARTUP_NR_THROTTLED=${STARTUP_NR_THROTTLED}
+              STARTUP_THROTTLED_MS=${STARTUP_THROTTLED_MS}
+              LIVE_NR_THROTTLED=${LIVE_NR_THROTTLED}
+              LIVE_THROTTLED_MS=${LIVE_THROTTLED_MS}
+              EOF
+                mv /tmp/rightsizing-report.tmp /tmp/rightsizing-report
+
+                printf "[%s] pod=%s role=%s phase=STEADY boot_cpu=%s live_cpu=%s startup_ms=%d nr_throttled=%d throttled_ms=%d\n" \
+                  "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${APP_ROLE}" \
+                  "${BOOT_CPU_MAX_MC}" "${LIVE_CPU_MAX_MC}" "${STARTUP_MS}" \
+                  "${STARTUP_NR_THROTTLED}" "${STARTUP_THROTTLED_MS}"
+                sleep 5
+              done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: boosted-app
+  namespace: pod-rightsizing
+  labels:
+    demo: startup-boost
+    app: boosted-app
+    role: boosted
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: boosted-app
+  template:
+    metadata:
+      labels:
+        demo: startup-boost
+        app: boosted-app
+        role: boosted
+    spec:
+      terminationGracePeriodSeconds: 2
+      containers:
+        - name: app
+          image: alpine:3.20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - test -f /tmp/ready
+            initialDelaySeconds: 1
+            periodSeconds: 1
+            failureThreshold: 60
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: APP_ROLE
+              value: "boosted"
+            - name: STARTUP_ITERATIONS
+              value: "12000000"
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -eu
+
+              now_ms() {
+                awk '{printf "%d\n", $1 * 1000}' /proc/uptime
+              }
+
+              read_cpu_max_mc() {
+                if [ -r /sys/fs/cgroup/cpu.max ]; then
+                  awk '{
+                    if ($1 == "max") { print "unlimited"; }
+                    else { printf "%dm\n", ($1 * 1000) / $2; }
+                  }' /sys/fs/cgroup/cpu.max
+                else
+                  echo "unknown"
+                fi
+              }
+
+              read_stat_field() {
+                field="$1"
+                if [ -r /sys/fs/cgroup/cpu.stat ]; then
+                  awk -v f="$field" '$1 == f {print $2; found=1} END {if (!found) print 0}' /sys/fs/cgroup/cpu.stat
+                else
+                  echo 0
+                fi
+              }
+
+              BOOT_CPU_MAX_MC="$(read_cpu_max_mc)"
+              START_MS="$(now_ms)"
+              START_THROTTLED="$(read_stat_field nr_throttled)"
+              START_THROTTLED_USEC="$(read_stat_field throttled_usec)"
+              START_PERIODS="$(read_stat_field nr_periods)"
+
+              printf "[%s] pod=%s role=%s phase=STARTUP_BEGIN boot_cgroup_cpu=%s iterations=%s\n" \
+                "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${APP_ROLE}" "${BOOT_CPU_MAX_MC}" "${STARTUP_ITERATIONS}"
+
+              awk -v n="${STARTUP_ITERATIONS}" 'BEGIN { for (i = 0; i < n; i++) x += i * 0.000001; print x }' >/dev/null
+
+              END_MS="$(now_ms)"
+              END_THROTTLED="$(read_stat_field nr_throttled)"
+              END_THROTTLED_USEC="$(read_stat_field throttled_usec)"
+              END_PERIODS="$(read_stat_field nr_periods)"
+
+              STARTUP_MS=$((END_MS - START_MS))
+              STARTUP_NR_THROTTLED=$((END_THROTTLED - START_THROTTLED))
+              STARTUP_THROTTLED_MS=$(((END_THROTTLED_USEC - START_THROTTLED_USEC) / 1000))
+              STARTUP_NR_PERIODS=$((END_PERIODS - START_PERIODS))
+
+              touch /tmp/ready
+
+              printf "[%s] pod=%s role=%s phase=READY startup_ms=%d nr_throttled=%d throttled_ms=%d boot_cgroup_cpu=%s\n" \
+                "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${APP_ROLE}" "${STARTUP_MS}" \
+                "${STARTUP_NR_THROTTLED}" "${STARTUP_THROTTLED_MS}" "${BOOT_CPU_MAX_MC}"
+
+              while true; do
+                LIVE_CPU_MAX_MC="$(read_cpu_max_mc)"
+                LIVE_NR_THROTTLED="$(read_stat_field nr_throttled)"
+                LIVE_THROTTLED_MS="$(($(read_stat_field throttled_usec) / 1000))"
+
+                cat <<EOF >/tmp/rightsizing-report.tmp
+              POD_NAME=${POD_NAME}
+              APP_ROLE=${APP_ROLE}
+              BOOT_CPU_MAX_MC=${BOOT_CPU_MAX_MC}
+              LIVE_CPU_MAX_MC=${LIVE_CPU_MAX_MC}
+              STARTUP_MS=${STARTUP_MS}
+              STARTUP_NR_PERIODS=${STARTUP_NR_PERIODS}
+              STARTUP_NR_THROTTLED=${STARTUP_NR_THROTTLED}
+              STARTUP_THROTTLED_MS=${STARTUP_THROTTLED_MS}
+              LIVE_NR_THROTTLED=${LIVE_NR_THROTTLED}
+              LIVE_THROTTLED_MS=${LIVE_THROTTLED_MS}
+              EOF
+                mv /tmp/rightsizing-report.tmp /tmp/rightsizing-report
+
+                printf "[%s] pod=%s role=%s phase=STEADY boot_cpu=%s live_cpu=%s startup_ms=%d nr_throttled=%d throttled_ms=%d\n" \
+                  "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${APP_ROLE}" \
+                  "${BOOT_CPU_MAX_MC}" "${LIVE_CPU_MAX_MC}" "${STARTUP_MS}" \
+                  "${STARTUP_NR_THROTTLED}" "${STARTUP_THROTTLED_MS}"
+                sleep 5
+              done

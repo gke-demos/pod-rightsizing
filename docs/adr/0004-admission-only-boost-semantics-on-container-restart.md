@@ -5,7 +5,7 @@
 
 ## Context
 
-**CPU Startup Boost** is applied by the GKE VPA mutating admission webhook when a `Pod` object is first created in `kube-apiserver`. Once the Pod reaches `Ready`, the VPA Updater performs **In-Place Unboost**, restoring the Pod's `spec.containers[].resources` to the baseline CPU request and limit and removing the `vpaCpuStartupBoost/<container-name>` annotation.
+**CPU Startup Boost** is applied by the GKE VPA mutating admission webhook (`gke-vpa-webhook-config`) when a `Pod` object is first created in `kube-apiserver` (injecting `vpaCPUStartupBoost/<container-name>`, `vpaObservedContainers`, and `vpaUpdates`). Once the Pod reaches `Ready`, the VPA Updater performs **In-Place Unboost**, restoring the Pod's `spec.containers[].resources` to the baseline CPU request and limit and removing the `vpaCPUStartupBoost/<container-name>` annotation.
 
 If a container subsequently crashes (`Error` or `OOMKilled`) while the `Pod` object remains scheduled on the node, `kubelet` restarts the container in-place (`restartCount` increments) without creating a new `Pod` object in `kube-apiserver`.
 

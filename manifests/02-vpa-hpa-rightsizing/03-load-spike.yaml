@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rightsized-api-load
+  namespace: pod-rightsizing-hpa
+  labels:
+    demo: vpa-hpa-rightsizing
+    app: rightsized-api
+data:
+  mode: "spike"
