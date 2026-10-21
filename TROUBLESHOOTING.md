@@ -95,3 +95,27 @@ kubectl -n pod-rightsizing get events --field-selector reason=InPlaceResizedByVP
 ```
 
 See [ADR-0004](docs/adr/0004-admission-only-boost-semantics-on-container-restart.md).
+
+## 5. Resolving `PodResizePending: Deferred` before VPA's 5-minute `EvictedByVPA` fallback
+
+### Symptom
+
+1. A high-priority serving Pod on a tightly bin-packed node (>90% CPU request utilization) attempts to scale up in place (`updateMode: "InPlaceOrRecreate"`), gets stuck in `PodResizePending=True (reason=Deferred)` with a `ResizeDeferred` event, and after 5 minutes is evicted and recreated (`reason=EvictedByVPA`).
+2. Or, when low-priority batch Pods are evicted to free room for the serving Pod, their ReplicaSet replacements preempt other normal default-priority (`0`) Pods on the node.
+
+### Root cause
+
+1. When `kubelet` cannot admit an in-place CPU or memory increase because other Pods occupy the node's allocatable capacity, it sets `PodResizePending: Deferred`. Under GKE VPA's `InPlaceOrRecreate` mode, an in-place resize that remains `Deferred` for more than 5 minutes (or `Infeasible` for more than 1 minute) falls back to Pod eviction (`EvictedByVPA`) so the Pod can be rescheduled onto a node with sufficient headroom.
+2. In Kubernetes, the default priority is `0`. If a batch `PriorityClass` is given a positive value (such as `1000`) and `preemptionPolicy: PreemptLowerPriority`, replacement batch Pods can preempt normal `priority: 0` workloads.
+
+### Fix and verification
+
+1. Configure opportunistic scavenger/batch `PriorityClass` objects with a **negative** priority (`value: -10`) and `preemptionPolicy: Never`, while giving latency-sensitive serving workloads a high positive `PriorityClass` (`value: 1000000`, `preemptionPolicy: PreemptLowerPriority`).
+2. Keep `terminationGracePeriodSeconds` short on preemptible batch Pods so `kubelet` can admit the deferred in-place resize (`ResizeCompleted`, `RESTARTS: 0`) within seconds of preemption (`InPlacePodVerticalScalingSchedulerPreemption` in Kubernetes 1.37 / KEP-5836):
+
+```bash
+kubectl -n pod-rightsizing-preemption get events \
+  --field-selector reason=ResizeDeferred,reason=ResizeCompleted
+```
+
+See [ADR-0005](docs/adr/0005-priority-preemption-for-deferred-in-place-pod-resize.md).

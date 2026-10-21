@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pod-rightsizing-preemption
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority-serving
+  labels:
+    demo: vpa-preemption-utilization
+value: 1000000
+globalDefault: false
+description: "Mission-critical serving tier that can preempt low-priority batch pods during in-place vertical scale-up."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: low-priority-batch
+  labels:
+    demo: vpa-preemption-utilization
+value: -10
+preemptionPolicy: Never
+globalDefault: false
+description: "Opportunistic scavenger batch tier that packs reclaimed node CPU slack without preempting other pods and yields to high-priority serving resizes."
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: serving-api-vpa
+  namespace: pod-rightsizing-preemption
+  labels:
+    demo: vpa-preemption-utilization
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: serving-api
+  updatePolicy:
+    updateMode: "InPlaceOrRecreate"
+  startupBoost:
+    cpu:
+      type: "Factor"
+      factor: 3
+      durationSeconds: 0
+  resourcePolicy:
+    containerPolicies:
+      - containerName: app
+        controlledResources: ["cpu", "memory"]
+        controlledValues: RequestsAndLimits
+        minAllowed:
+          cpu: 250m
+          memory: 128Mi
+        maxAllowed:
+          cpu: 1200m
+          memory: 256Mi

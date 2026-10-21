@@ -1,11 +1,15 @@
 KUBE_CONTEXT ?= $(shell kubectl config current-context 2>/dev/null)
 NAMESPACE ?= pod-rightsizing
 HPA_NAMESPACE ?= pod-rightsizing-hpa
+PREEMPT_NAMESPACE ?= pod-rightsizing-preemption
 
-.PHONY: apply apply-startup-boost apply-vpa-hpa load-spike stop-load-spike \
-	watch watch-startup-boost watch-vpa-hpa status status-startup-boost status-vpa-hpa \
-	logs logs-startup-boost logs-vpa-hpa verify verify-startup-boost verify-vpa-hpa \
-	clean clean-startup-boost clean-vpa-hpa
+.PHONY: apply apply-startup-boost apply-vpa-hpa apply-vpa-preemption \
+	load-spike stop-load-spike pack-node-batch trigger-resize-preemption \
+	watch watch-startup-boost watch-vpa-hpa watch-vpa-preemption \
+	status status-startup-boost status-vpa-hpa status-vpa-preemption \
+	logs logs-startup-boost logs-vpa-hpa logs-vpa-preemption \
+	verify verify-startup-boost verify-vpa-hpa verify-vpa-preemption \
+	clean clean-startup-boost clean-vpa-hpa clean-vpa-preemption
 
 apply: apply-startup-boost
 
@@ -18,6 +22,17 @@ apply-vpa-hpa:
 	kubectl --context="$(KUBE_CONTEXT)" apply -f manifests/02-vpa-hpa-rightsizing/01-vpa-hpa.yaml
 	sleep 2
 	kubectl --context="$(KUBE_CONTEXT)" apply -f manifests/02-vpa-hpa-rightsizing/02-workload.yaml
+
+apply-vpa-preemption:
+	kubectl --context="$(KUBE_CONTEXT)" apply -f manifests/03-vpa-preemption-utilization/01-priority-vpa.yaml
+	sleep 2
+	kubectl --context="$(KUBE_CONTEXT)" apply -f manifests/03-vpa-preemption-utilization/02-serving-workload.yaml
+
+pack-node-batch:
+	@KUBE_CONTEXT="$(KUBE_CONTEXT)" NAMESPACE="$(PREEMPT_NAMESPACE)" ./hack/preemption-ctl.sh pack
+
+trigger-resize-preemption:
+	@KUBE_CONTEXT="$(KUBE_CONTEXT)" NAMESPACE="$(PREEMPT_NAMESPACE)" ./hack/preemption-ctl.sh trigger
 
 load-spike:
 	kubectl --context="$(KUBE_CONTEXT)" apply -f manifests/02-vpa-hpa-rightsizing/03-load-spike.yaml
@@ -39,6 +54,9 @@ watch-startup-boost:
 watch-vpa-hpa:
 	@KUBE_CONTEXT="$(KUBE_CONTEXT)" ./hack/watch-vpa-hpa.sh
 
+watch-vpa-preemption:
+	@KUBE_CONTEXT="$(KUBE_CONTEXT)" ./hack/watch-vpa-preemption.sh
+
 status: status-startup-boost
 
 status-startup-boost:
@@ -46,6 +64,9 @@ status-startup-boost:
 
 status-vpa-hpa:
 	@KUBE_CONTEXT="$(KUBE_CONTEXT)" ./hack/watch-vpa-hpa.sh --once
+
+status-vpa-preemption:
+	@KUBE_CONTEXT="$(KUBE_CONTEXT)" ./hack/watch-vpa-preemption.sh --once
 
 logs: logs-startup-boost
 
@@ -55,6 +76,9 @@ logs-startup-boost:
 logs-vpa-hpa:
 	@kubectl --context="$(KUBE_CONTEXT)" -n "$(HPA_NAMESPACE)" logs -l app=rightsized-api --tail=6
 
+logs-vpa-preemption:
+	@kubectl --context="$(KUBE_CONTEXT)" -n "$(PREEMPT_NAMESPACE)" logs -l app=serving-api --tail=6
+
 verify: verify-startup-boost
 
 verify-startup-boost:
@@ -63,7 +87,10 @@ verify-startup-boost:
 verify-vpa-hpa:
 	@KUBE_CONTEXT="$(KUBE_CONTEXT)" ./hack/verify-vpa-hpa-e2e.sh
 
-clean: clean-startup-boost clean-vpa-hpa
+verify-vpa-preemption:
+	@KUBE_CONTEXT="$(KUBE_CONTEXT)" ./hack/verify-vpa-preemption-e2e.sh
+
+clean: clean-startup-boost clean-vpa-hpa clean-vpa-preemption
 
 clean-startup-boost:
 	kubectl --context="$(KUBE_CONTEXT)" delete -f manifests/01-startup-boost/02-workloads.yaml --ignore-not-found=true
@@ -73,3 +100,8 @@ clean-vpa-hpa:
 	kubectl --context="$(KUBE_CONTEXT)" delete -f manifests/02-vpa-hpa-rightsizing/03-load-spike.yaml --ignore-not-found=true
 	kubectl --context="$(KUBE_CONTEXT)" delete -f manifests/02-vpa-hpa-rightsizing/02-workload.yaml --ignore-not-found=true
 	kubectl --context="$(KUBE_CONTEXT)" delete -f manifests/02-vpa-hpa-rightsizing/01-vpa-hpa.yaml --ignore-not-found=true
+
+clean-vpa-preemption:
+	kubectl --context="$(KUBE_CONTEXT)" delete -f manifests/03-vpa-preemption-utilization/03-batch-packers.yaml --ignore-not-found=true
+	kubectl --context="$(KUBE_CONTEXT)" delete -f manifests/03-vpa-preemption-utilization/02-serving-workload.yaml --ignore-not-found=true
+	kubectl --context="$(KUBE_CONTEXT)" delete -f manifests/03-vpa-preemption-utilization/01-priority-vpa.yaml --ignore-not-found=true

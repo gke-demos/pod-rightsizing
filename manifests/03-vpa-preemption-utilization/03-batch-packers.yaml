@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch-scavenger
+  namespace: pod-rightsizing-preemption
+  labels:
+    demo: vpa-preemption-utilization
+    app: batch-scavenger
+    tier: batch
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: batch-scavenger
+  template:
+    metadata:
+      labels:
+        demo: vpa-preemption-utilization
+        app: batch-scavenger
+        tier: batch
+    spec:
+      priorityClassName: low-priority-batch
+      terminationGracePeriodSeconds: 2
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: serving-api
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: worker
+          image: alpine:3.20
+          resources:
+            requests:
+              cpu: 350m
+              memory: 64Mi
+            limits:
+              cpu: 350m
+              memory: 64Mi
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -eu
+              printf "[%s] pod=%s priority=low-priority-batch phase=PACKING_SLACK cpu_req=350m\n" \
+                "$(date -u +%H:%M:%SZ)" "${POD_NAME}"
+              while true; do
+                awk 'BEGIN { for (i = 0; i < 200000; i++) x += i * 0.000001 }' >/dev/null
+                sleep 2
+              done

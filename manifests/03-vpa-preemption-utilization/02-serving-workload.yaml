@@ -1,0 +1,190 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: serving-api-load
+  namespace: pod-rightsizing-preemption
+  labels:
+    demo: vpa-preemption-utilization
+    app: serving-api
+data:
+  mode: "baseline"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: serving-api
+  namespace: pod-rightsizing-preemption
+  labels:
+    demo: vpa-preemption-utilization
+    app: serving-api
+    tier: serving
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: serving-api
+  template:
+    metadata:
+      labels:
+        demo: vpa-preemption-utilization
+        app: serving-api
+        tier: serving
+    spec:
+      priorityClassName: high-priority-serving
+      terminationGracePeriodSeconds: 2
+      volumes:
+        - name: load-config
+          configMap:
+            name: serving-api-load
+      containers:
+        - name: app
+          image: alpine:3.20
+          resources:
+            requests:
+              cpu: 350m
+              memory: 128Mi
+            limits:
+              cpu: 350m
+              memory: 128Mi
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - test -f /tmp/ready
+            initialDelaySeconds: 1
+            periodSeconds: 1
+            failureThreshold: 60
+          volumeMounts:
+            - name: load-config
+              mountPath: /etc/load
+              readOnly: true
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: STARTUP_ITERATIONS
+              value: "3000000"
+          command:
+            - /bin/sh
+            - -c
+          args:
+            - |
+              set -eu
+
+              now_ms() {
+                awk '{printf "%d\n", $1 * 1000}' /proc/uptime
+              }
+
+              read_cpu_max_mc() {
+                if [ -r /sys/fs/cgroup/cpu.max ]; then
+                  awk '{
+                    if ($1 == "max") { print "unlimited"; }
+                    else { printf "%dm\n", ($1 * 1000) / $2; }
+                  }' /sys/fs/cgroup/cpu.max
+                else
+                  echo "unknown"
+                fi
+              }
+
+              read_cpu_weight() {
+                if [ -r /sys/fs/cgroup/cpu.weight ]; then
+                  cat /sys/fs/cgroup/cpu.weight
+                else
+                  echo "unknown"
+                fi
+              }
+
+              read_stat_field() {
+                field="$1"
+                if [ -r /sys/fs/cgroup/cpu.stat ]; then
+                  awk -v f="$field" '$1 == f {print $2; found=1} END {if (!found) print 0}' /sys/fs/cgroup/cpu.stat
+                else
+                  echo 0
+                fi
+              }
+
+              read_load_mode() {
+                if [ -r /tmp/load-mode ]; then
+                  cat /tmp/load-mode
+                elif [ -r /etc/load/mode ]; then
+                  cat /etc/load/mode
+                else
+                  echo "baseline"
+                fi
+              }
+
+              BOOT_CPU_MAX_MC="$(read_cpu_max_mc)"
+              START_MS="$(now_ms)"
+              START_THROTTLED="$(read_stat_field nr_throttled)"
+              START_THROTTLED_USEC="$(read_stat_field throttled_usec)"
+
+              printf "[%s] pod=%s priority=high-priority-serving phase=STARTUP_BEGIN boot_cgroup_cpu=%s\n" \
+                "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${BOOT_CPU_MAX_MC}"
+
+              awk -v n="${STARTUP_ITERATIONS}" 'BEGIN { for (i = 0; i < n; i++) x += i * 0.000001; print x }' >/dev/null
+
+              END_MS="$(now_ms)"
+              END_THROTTLED="$(read_stat_field nr_throttled)"
+              END_THROTTLED_USEC="$(read_stat_field throttled_usec)"
+              STARTUP_MS=$((END_MS - START_MS))
+              STARTUP_NR_THROTTLED=$((END_THROTTLED - START_THROTTLED))
+              STARTUP_THROTTLED_MS=$(((END_THROTTLED_USEC - START_THROTTLED_USEC) / 1000))
+
+              touch /tmp/ready
+
+              printf "[%s] pod=%s priority=high-priority-serving phase=READY startup_ms=%d nr_throttled=%d boot_cgroup_cpu=%s\n" \
+                "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${STARTUP_MS}" "${STARTUP_NR_THROTTLED}" "${BOOT_CPU_MAX_MC}"
+
+              (
+                while true; do
+                  mode="$(read_load_mode)"
+                  if [ "${mode}" = "surge" ]; then
+                    awk 'BEGIN { for (i = 0; i < 4000000; i++) x += i * 0.000001 }' >/dev/null
+                  else
+                    awk 'BEGIN { for (i = 0; i < 300000; i++) x += i * 0.000001 }' >/dev/null
+                    sleep 1
+                  fi
+                done
+              ) &
+
+              PREV_USAGE_USEC="$(read_stat_field usage_usec)"
+              PREV_MS="$(now_ms)"
+
+              while true; do
+                sleep 3
+                LIVE_CPU_MAX_MC="$(read_cpu_max_mc)"
+                LIVE_CPU_WEIGHT="$(read_cpu_weight)"
+                LIVE_NR_THROTTLED="$(read_stat_field nr_throttled)"
+                LOAD_MODE="$(read_load_mode)"
+                CUR_USAGE_USEC="$(read_stat_field usage_usec)"
+                CUR_MS="$(now_ms)"
+                DELTA_MS=$((CUR_MS - PREV_MS))
+                if [ "${DELTA_MS}" -gt 0 ]; then
+                  LIVE_USAGE_MC=$(((CUR_USAGE_USEC - PREV_USAGE_USEC) / DELTA_MS))
+                else
+                  LIVE_USAGE_MC=0
+                fi
+                PREV_USAGE_USEC="${CUR_USAGE_USEC}"
+                PREV_MS="${CUR_MS}"
+
+                cat <<EOF >/tmp/rightsizing-report.tmp
+              POD_NAME=${POD_NAME}
+              PRIORITY_CLASS=high-priority-serving
+              LOAD_MODE=${LOAD_MODE}
+              BOOT_CPU_MAX_MC=${BOOT_CPU_MAX_MC}
+              LIVE_CPU_MAX_MC=${LIVE_CPU_MAX_MC}
+              LIVE_CPU_WEIGHT=${LIVE_CPU_WEIGHT}
+              LIVE_USAGE_MC=${LIVE_USAGE_MC}m
+              STARTUP_MS=${STARTUP_MS}
+              STARTUP_NR_THROTTLED=${STARTUP_NR_THROTTLED}
+              STARTUP_THROTTLED_MS=${STARTUP_THROTTLED_MS}
+              LIVE_NR_THROTTLED=${LIVE_NR_THROTTLED}
+              EOF
+                mv /tmp/rightsizing-report.tmp /tmp/rightsizing-report
+
+                printf "[%s] pod=%s priority=high-priority-serving phase=SERVING mode=%s boot_cpu=%s live_cpu=%s weight=%s usage=%dm nr_throttled=%d\n" \
+                  "$(date -u +%H:%M:%SZ)" "${POD_NAME}" "${LOAD_MODE}" "${BOOT_CPU_MAX_MC}" \
+                  "${LIVE_CPU_MAX_MC}" "${LIVE_CPU_WEIGHT}" "${LIVE_USAGE_MC}" "${LIVE_NR_THROTTLED}"
+              done

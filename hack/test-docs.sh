@@ -12,6 +12,7 @@ REQUIRED_FILES=(
   "README.md"
   "BLOG-01-STARTUP-BOOST.md"
   "BLOG-02-VPA-HPA-RIGHTSIZING.md"
+  "BLOG-03-VPA-PREEMPTION-UTILIZATION.md"
   "TROUBLESHOOTING.md"
   "GLOSSARY.md"
   "AGENTS.md"
@@ -19,6 +20,7 @@ REQUIRED_FILES=(
   "docs/adr/0002-requests-and-limits-qos-preservation-for-in-place-unboost.md"
   "docs/adr/0003-cooperative-vpa-hpa-rightsizing-policy-and-teardown-safety.md"
   "docs/adr/0004-admission-only-boost-semantics-on-container-restart.md"
+  "docs/adr/0005-priority-preemption-for-deferred-in-place-pod-resize.md"
 )
 for rel in "${REQUIRED_FILES[@]}"; do
   [[ -f "${REPO_ROOT}/${rel}" ]] || fail "Missing required doc file: ${rel}"
@@ -30,6 +32,7 @@ check_no_banned_terms \
   "${REPO_ROOT}/README.md" \
   "${REPO_ROOT}/BLOG-01-STARTUP-BOOST.md" \
   "${REPO_ROOT}/BLOG-02-VPA-HPA-RIGHTSIZING.md" \
+  "${REPO_ROOT}/BLOG-03-VPA-PREEMPTION-UTILIZATION.md" \
   "${REPO_ROOT}/TROUBLESHOOTING.md" \
   "${REPO_ROOT}/GLOSSARY.md" \
   "${REPO_ROOT}/Makefile" \
@@ -49,6 +52,7 @@ md_files = [
     root / "README.md",
     root / "BLOG-01-STARTUP-BOOST.md",
     root / "BLOG-02-VPA-HPA-RIGHTSIZING.md",
+    root / "BLOG-03-VPA-PREEMPTION-UTILIZATION.md",
     root / "TROUBLESHOOTING.md",
     root / "GLOSSARY.md",
 ] + list((root / "docs").rglob("*.md"))
@@ -67,7 +71,7 @@ for md in md_files:
         if not resolved.exists():
             raise SystemExit(f"Broken relative link in {md.relative_to(root)}: {target} -> {resolved}")
 
-for doc_name in ("README.md", "BLOG-01-STARTUP-BOOST.md", "BLOG-02-VPA-HPA-RIGHTSIZING.md"):
+for doc_name in ("README.md", "BLOG-01-STARTUP-BOOST.md", "BLOG-02-VPA-HPA-RIGHTSIZING.md", "BLOG-03-VPA-PREEMPTION-UTILIZATION.md"):
     text = (root / doc_name).read_text(encoding="utf-8")
     assert "```mermaid" in text, f"Expected at least one Mermaid diagram in {doc_name}"
 PY

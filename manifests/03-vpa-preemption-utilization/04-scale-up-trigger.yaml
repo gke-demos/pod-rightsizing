@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: serving-api-load
+  namespace: pod-rightsizing-preemption
+  labels:
+    demo: vpa-preemption-utilization
+    app: serving-api
+data:
+  mode: "surge"
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: serving-api-vpa
+  namespace: pod-rightsizing-preemption
+  labels:
+    demo: vpa-preemption-utilization
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: serving-api
+  updatePolicy:
+    updateMode: "InPlaceOrRecreate"
+  startupBoost:
+    cpu:
+      type: "Factor"
+      factor: 3
+      durationSeconds: 0
+  resourcePolicy:
+    containerPolicies:
+      - containerName: app
+        controlledResources: ["cpu", "memory"]
+        controlledValues: RequestsAndLimits
+        minAllowed:
+          cpu: 1050m
+          memory: 128Mi
+        maxAllowed:
+          cpu: 1200m
+          memory: 256Mi
